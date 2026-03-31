@@ -27,7 +27,7 @@ type ArrsInstanceRequest struct {
 	SyncIntervalHours int    `json:"sync_interval_hours"`
 }
 
-// ArrsWebhookRequest represents a webhook payload from Radarr/Sonarr
+// ArrsWebhookRequest represents a webhook payload from Radarr/Sonarr/Lidarr
 type ArrsWebhookRequest struct {
 	EventType string `json:"eventType"`
 	FilePath  string `json:"filePath,omitempty"`
@@ -44,6 +44,13 @@ type ArrsWebhookRequest struct {
 	EpisodeFile struct {
 		Path string `json:"path"`
 	} `json:"episodeFile"`
+	// Lidarr-specific fields
+	Artist struct {
+		Path string `json:"path"`
+	} `json:"artist"`
+	TrackFile struct {
+		Path string `json:"path"`
+	} `json:"trackFile"`
 	DeletedFiles ArrsDeletedFiles `json:"deletedFiles,omitempty"`
 }
 
@@ -131,12 +138,14 @@ func (s *Server) handleArrsWebhook(c *fiber.Ctx) error {
 	case "Test":
 		slog.InfoContext(c.Context(), "Received ARR test webhook")
 		return c.Status(200).JSON(fiber.Map{"success": true, "message": "Test successful"})
-	case "Download": // OnImport
+	case "Download": // OnImport (Radarr/Sonarr); Lidarr uses "ReleaseImport" but also sends "Download"
 		isScanEvent = true
 		if req.EpisodeFile.Path != "" {
 			pathsToScan = append(pathsToScan, req.EpisodeFile.Path)
 		} else if req.MovieFile.Path != "" {
 			pathsToScan = append(pathsToScan, req.MovieFile.Path)
+		} else if req.TrackFile.Path != "" {
+			pathsToScan = append(pathsToScan, req.TrackFile.Path)
 		} else if req.FilePath != "" {
 			pathsToScan = append(pathsToScan, req.FilePath)
 		}
@@ -147,14 +156,18 @@ func (s *Server) handleArrsWebhook(c *fiber.Ctx) error {
 			pathsToScan = append(pathsToScan, req.EpisodeFile.Path)
 		} else if req.MovieFile.Path != "" {
 			pathsToScan = append(pathsToScan, req.MovieFile.Path)
+		} else if req.TrackFile.Path != "" {
+			pathsToScan = append(pathsToScan, req.TrackFile.Path)
 		} else if req.FilePath != "" {
 			pathsToScan = append(pathsToScan, req.FilePath)
 		}
-		// Also scan the series/movie folder to pick up changes
+		// Also scan the series/movie/artist folder to pick up changes
 		if req.Series.Path != "" {
 			pathsToScan = append(pathsToScan, req.Series.Path)
 		} else if req.Movie.FolderPath != "" {
 			pathsToScan = append(pathsToScan, req.Movie.FolderPath)
+		} else if req.Artist.Path != "" {
+			pathsToScan = append(pathsToScan, req.Artist.Path)
 		}
 	case "Upgrade":
 		isScanEvent = true
@@ -163,6 +176,8 @@ func (s *Server) handleArrsWebhook(c *fiber.Ctx) error {
 			pathsToScan = append(pathsToScan, req.EpisodeFile.Path)
 		} else if req.MovieFile.Path != "" {
 			pathsToScan = append(pathsToScan, req.MovieFile.Path)
+		} else if req.TrackFile.Path != "" {
+			pathsToScan = append(pathsToScan, req.TrackFile.Path)
 		} else if req.FilePath != "" {
 			pathsToScan = append(pathsToScan, req.FilePath)
 		}
@@ -188,6 +203,20 @@ func (s *Server) handleArrsWebhook(c *fiber.Ctx) error {
 	case "EpisodeFileDelete":
 		if req.EpisodeFile.Path != "" {
 			filesToDelete = append(filesToDelete, req.EpisodeFile.Path)
+		}
+	// Lidarr-specific events
+	case "ArtistDelete":
+		if req.Artist.Path != "" {
+			dirsToDelete = append(dirsToDelete, req.Artist.Path)
+		}
+	case "AlbumDelete":
+		// Albums don't carry their own path in the webhook payload; use artist path
+		if req.Artist.Path != "" {
+			dirsToDelete = append(dirsToDelete, req.Artist.Path)
+		}
+	case "TrackFileDelete":
+		if req.TrackFile.Path != "" {
+			filesToDelete = append(filesToDelete, req.TrackFile.Path)
 		}
 	default:
 		slog.DebugContext(c.Context(), "Ignoring unhandled webhook event", "event_type", req.EventType)
@@ -464,6 +493,8 @@ type ArrsStatsResponse struct {
 	EnabledRadarr    int     `json:"enabled_radarr"`
 	TotalSonarr      int     `json:"total_sonarr"`
 	EnabledSonarr    int     `json:"enabled_sonarr"`
+	TotalLidarr      int     `json:"total_lidarr"`
+	EnabledLidarr    int     `json:"enabled_lidarr"`
 	DueForSync       int     `json:"due_for_sync"`
 	LastSync         *string `json:"last_sync"`
 }
@@ -665,7 +696,7 @@ func (s *Server) handleGetArrsStats(c *fiber.Ctx) error {
 	instances := s.arrsService.GetAllInstances()
 
 	// Calculate stats from instances
-	var totalRadarr, enabledRadarr, totalSonarr, enabledSonarr int
+	var totalRadarr, enabledRadarr, totalSonarr, enabledSonarr, totalLidarr, enabledLidarr int
 	for _, instance := range instances {
 		switch instance.Type {
 		case "radarr":
@@ -678,16 +709,23 @@ func (s *Server) handleGetArrsStats(c *fiber.Ctx) error {
 			if instance.Enabled {
 				enabledSonarr++
 			}
+		case "lidarr":
+			totalLidarr++
+			if instance.Enabled {
+				enabledLidarr++
+			}
 		}
 	}
 
 	response := &ArrsStatsResponse{
-		TotalInstances:   totalRadarr + totalSonarr,
-		EnabledInstances: enabledRadarr + enabledSonarr,
+		TotalInstances:   totalRadarr + totalSonarr + totalLidarr,
+		EnabledInstances: enabledRadarr + enabledSonarr + enabledLidarr,
 		TotalRadarr:      totalRadarr,
 		EnabledRadarr:    enabledRadarr,
 		TotalSonarr:      totalSonarr,
 		EnabledSonarr:    enabledSonarr,
+		TotalLidarr:      totalLidarr,
+		EnabledLidarr:    enabledLidarr,
 		DueForSync:       0, // Not applicable with config-first approach
 	}
 

@@ -16,6 +16,7 @@ import (
 	"github.com/javi11/altmount/internal/arrs/model"
 	"github.com/javi11/altmount/internal/config"
 	"golift.io/starr"
+	"golift.io/starr/lidarr"
 	"golift.io/starr/radarr"
 	"golift.io/starr/sonarr"
 )
@@ -109,33 +110,49 @@ func (m *Manager) findInstanceForFilePath(ctx context.Context, filePath string, 
 }
 
 func (m *Manager) managesFile(ctx context.Context, instanceType string, client any, filePath string) bool {
-	if instanceType == "radarr" {
+	switch instanceType {
+	case "radarr":
 		rc, ok := client.(*radarr.Radarr)
 		if !ok {
 			return false
 		}
 		return m.radarrManagesFile(ctx, rc, filePath)
+	case "lidarr":
+		lc, ok := client.(*lidarr.Lidarr)
+		if !ok {
+			return false
+		}
+		return m.lidarrManagesFile(ctx, lc, filePath)
+	default:
+		sc, ok := client.(*sonarr.Sonarr)
+		if !ok {
+			return false
+		}
+		return m.sonarrManagesFile(ctx, sc, filePath)
 	}
-	sc, ok := client.(*sonarr.Sonarr)
-	if !ok {
-		return false
-	}
-	return m.sonarrManagesFile(ctx, sc, filePath)
 }
 
 func (m *Manager) hasFile(ctx context.Context, instanceType string, client any, instanceName, relativePath string) bool {
-	if instanceType == "radarr" {
+	switch instanceType {
+	case "radarr":
 		rc, ok := client.(*radarr.Radarr)
 		if !ok {
 			return false
 		}
 		return m.radarrHasFile(ctx, rc, instanceName, relativePath)
+	case "lidarr":
+		lc, ok := client.(*lidarr.Lidarr)
+		if !ok {
+			return false
+		}
+		return m.lidarrHasFile(ctx, lc, instanceName, relativePath)
+	default:
+		sc, ok := client.(*sonarr.Sonarr)
+		if !ok {
+			return false
+		}
+		return m.sonarrHasFile(ctx, sc, instanceName, relativePath)
 	}
-	sc, ok := client.(*sonarr.Sonarr)
-	if !ok {
-		return false
-	}
-	return m.sonarrHasFile(ctx, sc, instanceName, relativePath)
 }
 
 // radarrManagesFile checks if Radarr manages the given file path using root folders (checkrr approach)
@@ -270,6 +287,13 @@ func (m *Manager) TriggerFileRescan(ctx context.Context, pathForRescan string, r
 			}
 			return nil, m.triggerSonarrRescanByPath(ctx, client, pathForRescan, relativePath, instanceName)
 
+		case "lidarr":
+			client, err := m.clients.GetOrCreateLidarrClient(instanceName, instanceConfig.URL, instanceConfig.APIKey)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create Lidarr client: %w", err)
+			}
+			return nil, m.triggerLidarrRescanByPath(ctx, client, pathForRescan, relativePath, instanceName)
+
 		default:
 			return nil, fmt.Errorf("unsupported instance type: %s", instanceType)
 		}
@@ -336,6 +360,20 @@ func (m *Manager) TriggerScanForFile(ctx context.Context, filePath string) error
 			} else {
 				slog.InfoContext(bgCtx, "Triggered RefreshMonitoredDownloads", "instance", instance.Name)
 			}
+
+		case "lidarr":
+			client, err := m.clients.GetOrCreateLidarrClient(instance.Name, instance.URL, instance.APIKey)
+			if err != nil {
+				slog.ErrorContext(bgCtx, "Failed to create Lidarr client for scan trigger", "instance", instance.Name, "error", err)
+				return
+			}
+			// Trigger RefreshMonitoredDownloads
+			_, err = client.SendCommandContext(bgCtx, &lidarr.CommandRequest{Name: "RefreshMonitoredDownloads"})
+			if err != nil {
+				slog.ErrorContext(bgCtx, "Failed to trigger RefreshMonitoredDownloads", "instance", instance.Name, "error", err)
+			} else {
+				slog.InfoContext(bgCtx, "Triggered RefreshMonitoredDownloads", "instance", instance.Name)
+			}
 		}
 	}()
 
@@ -380,6 +418,20 @@ func (m *Manager) TriggerDownloadScan(ctx context.Context, instanceType string) 
 					}
 					// Trigger RefreshMonitoredDownloads
 					_, err = client.SendCommandContext(bgCtx, &sonarr.CommandRequest{Name: "RefreshMonitoredDownloads"})
+					if err != nil {
+						slog.ErrorContext(bgCtx, "Failed to trigger RefreshMonitoredDownloads", "instance", inst.Name, "error", err)
+					} else {
+						slog.InfoContext(bgCtx, "Triggered RefreshMonitoredDownloads", "instance", inst.Name)
+					}
+
+				case "lidarr":
+					client, err := m.clients.GetOrCreateLidarrClient(inst.Name, inst.URL, inst.APIKey)
+					if err != nil {
+						slog.ErrorContext(bgCtx, "Failed to create Lidarr client for scan trigger", "instance", inst.Name, "error", err)
+						return nil, err
+					}
+					// Trigger RefreshMonitoredDownloads
+					_, err = client.SendCommandContext(bgCtx, &lidarr.CommandRequest{Name: "RefreshMonitoredDownloads"})
 					if err != nil {
 						slog.ErrorContext(bgCtx, "Failed to trigger RefreshMonitoredDownloads", "instance", inst.Name, "error", err)
 					} else {
@@ -778,6 +830,244 @@ func (m *Manager) blocklistRadarrMovieFile(ctx context.Context, client *radarr.R
 	}
 
 	slog.WarnContext(ctx, "No history record found for file, cannot blocklist", "movie_id", movieID, "file_id", fileID)
+	return nil
+}
+
+// lidarrManagesFile checks if Lidarr manages the given file path using root folders
+func (m *Manager) lidarrManagesFile(ctx context.Context, client *lidarr.Lidarr, filePath string) bool {
+	slog.DebugContext(ctx, "Checking Lidarr root folders for file ownership", "file_path", filePath)
+
+	rootFolders, err := client.GetRootFoldersContext(ctx)
+	if err != nil {
+		slog.DebugContext(ctx, "Failed to get root folders from Lidarr for file check", "error", err)
+		return false
+	}
+
+	for _, folder := range rootFolders {
+		slog.DebugContext(ctx, "Checking Lidarr root folder", "folder_path", folder.Path, "file_path", filePath)
+		if strings.HasPrefix(filePath, folder.Path) {
+			slog.DebugContext(ctx, "File matches Lidarr root folder", "folder_path", folder.Path)
+			return true
+		}
+	}
+
+	slog.DebugContext(ctx, "File does not match any Lidarr root folders")
+	return false
+}
+
+// lidarrHasFile checks if any artist in the instance contains the given relative path
+func (m *Manager) lidarrHasFile(ctx context.Context, client *lidarr.Lidarr, instanceName, relativePath string) bool {
+	artists, err := client.GetArtistContext(ctx, "")
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to get artists for relative path check", "instance", instanceName, "error", err)
+		return false
+	}
+
+	relativePath = filepath.ToSlash(relativePath)
+	strippedRelative := strings.TrimSuffix(relativePath, ".strm")
+
+	for _, artist := range artists {
+		if artist.Path == "" {
+			continue
+		}
+		folderName := filepath.Base(artist.Path)
+		if strings.Contains(relativePath, folderName) || strings.Contains(strippedRelative, folderName) {
+			return true
+		}
+	}
+	return false
+}
+
+// triggerLidarrRescanByPath triggers a rescan in Lidarr for the given file path
+func (m *Manager) triggerLidarrRescanByPath(ctx context.Context, client *lidarr.Lidarr, filePath, relativePath, instanceName string) error {
+	slog.InfoContext(ctx, "Searching Lidarr for matching album",
+		"instance", instanceName,
+		"file_path", filePath,
+		"relative_path", relativePath)
+
+	albums, err := m.data.GetAlbums(ctx, client, instanceName)
+	if err != nil {
+		return fmt.Errorf("failed to get albums from Lidarr: %w", err)
+	}
+
+	var targetAlbum *lidarr.Album
+	requestFileName := filepath.Base(filePath)
+
+	for _, album := range albums {
+		// Use the embedded artist path if available
+		artistPath := ""
+		if album.Artist != nil {
+			artistPath = album.Artist.Path
+		}
+
+		if artistPath != "" && strings.Contains(filePath, artistPath) {
+			targetAlbum = album
+			break
+		}
+
+		// Fallback: match by relative path against artist folder name
+		if artistPath != "" && relativePath != "" {
+			folderName := filepath.Base(artistPath)
+			if strings.Contains(filepath.ToSlash(relativePath), folderName) {
+				targetAlbum = album
+				break
+			}
+		}
+	}
+
+	if targetAlbum == nil {
+		slog.WarnContext(ctx, "No album found with matching file path in Lidarr library, attempting queue-based failure",
+			"instance", instanceName,
+			"file_path", filePath)
+
+		if err := m.failLidarrQueueItemByPath(ctx, client, filePath); err == nil {
+			return nil
+		}
+
+		return fmt.Errorf("no album found with file path %s in library or queue: %w", filePath, model.ErrPathMatchFailed)
+	}
+
+	slog.InfoContext(ctx, "Found matching album for file",
+		"instance", instanceName,
+		"album_id", targetAlbum.ID,
+		"album_title", targetAlbum.Title)
+
+	// Find the matching track file
+	trackFiles, err := client.GetTrackFilesForAlbumContext(ctx, targetAlbum.ID)
+	if err != nil {
+		return fmt.Errorf("failed to get track files for album %s: %w", targetAlbum.Title, err)
+	}
+
+	var targetTrackFile *lidarr.TrackFile
+	for _, tf := range trackFiles {
+		if tf.Path == filePath {
+			targetTrackFile = tf
+			break
+		}
+		if filepath.Base(tf.Path) == requestFileName {
+			slog.InfoContext(ctx, "Found Lidarr track file match by filename", "path", tf.Path)
+			targetTrackFile = tf
+			break
+		}
+		if before, ok := strings.CutSuffix(filePath, ".strm"); ok {
+			if strings.TrimSuffix(tf.Path, filepath.Ext(tf.Path)) == before {
+				targetTrackFile = tf
+				break
+			}
+		}
+		if relativePath != "" {
+			strippedRelative := strings.TrimSuffix(relativePath, ".strm")
+			if strings.HasSuffix(tf.Path, relativePath) ||
+				strings.HasSuffix(strings.TrimSuffix(tf.Path, filepath.Ext(tf.Path)), strippedRelative) {
+				slog.InfoContext(ctx, "Found Lidarr track file match by relative path suffix",
+					"lidarr_path", tf.Path, "relative_path", relativePath)
+				targetTrackFile = tf
+				break
+			}
+		}
+	}
+
+	if targetTrackFile != nil {
+		if err := m.blocklistLidarrTrackFile(ctx, client, targetAlbum.ID, targetTrackFile.ID); err != nil {
+			slog.WarnContext(ctx, "Failed to blocklist Lidarr release", "error", err)
+		}
+
+		if err := client.DeleteTrackFileContext(ctx, targetTrackFile.ID); err != nil {
+			slog.WarnContext(ctx, "Failed to delete track file from Lidarr, continuing with search",
+				"instance", instanceName,
+				"track_file_id", targetTrackFile.ID,
+				"error", err)
+		}
+	} else {
+		slog.WarnContext(ctx, "Album found but no matching track file found in Lidarr, attempting queue-based failure",
+			"album", targetAlbum.Title,
+			"file_path", filePath)
+
+		if err := m.failLidarrQueueItemByPath(ctx, client, filePath); err == nil {
+			return nil
+		}
+
+		return fmt.Errorf("no track file found for file in library or queue: %s: %w", filePath, model.ErrPathMatchFailed)
+	}
+
+	searchCmd := &lidarr.CommandRequest{
+		Name:     "AlbumSearch",
+		AlbumIDs: []int64{targetAlbum.ID},
+	}
+
+	response, err := client.SendCommandContext(ctx, searchCmd)
+	if err != nil {
+		return fmt.Errorf("failed to trigger Lidarr album search for album ID %d: %w", targetAlbum.ID, err)
+	}
+
+	slog.InfoContext(ctx, "Successfully triggered Lidarr album search for re-download",
+		"instance", instanceName,
+		"album_id", targetAlbum.ID,
+		"command_id", response.ID)
+
+	return nil
+}
+
+// failLidarrQueueItemByPath searches for an item in the active Lidarr queue by path and marks it as failed
+func (m *Manager) failLidarrQueueItemByPath(ctx context.Context, client *lidarr.Lidarr, path string) error {
+	queue, err := client.GetQueueContext(ctx, 0, 500)
+	if err != nil {
+		return fmt.Errorf("failed to get Lidarr queue: %w", err)
+	}
+
+	for _, q := range queue.Records {
+		if q.OutputPath == path ||
+			(q.OutputPath != "" && strings.HasSuffix(filepath.ToSlash(path), filepath.ToSlash(q.OutputPath))) ||
+			(q.OutputPath != "" && filepath.Base(q.OutputPath) == filepath.Base(path)) {
+			slog.InfoContext(ctx, "Found matching item in Lidarr download queue, marking as failed",
+				"queue_id", q.ID, "path", path, "output_path", q.OutputPath)
+
+			removeFromClient := true
+			opts := &starr.QueueDeleteOpts{
+				RemoveFromClient: &removeFromClient,
+				BlockList:        true,
+				SkipRedownload:   false,
+			}
+			return client.DeleteQueueContext(ctx, q.ID, opts)
+		}
+	}
+
+	return fmt.Errorf("no matching item found in Lidarr queue for path: %s", path)
+}
+
+// blocklistLidarrTrackFile finds the history event for the given album and marks it as failed (blocklisting the release)
+func (m *Manager) blocklistLidarrTrackFile(ctx context.Context, client *lidarr.Lidarr, albumID int64, fileID int64) error {
+	slog.DebugContext(ctx, "Attempting to find and blocklist release for track file", "album_id", albumID, "file_id", fileID)
+
+	req := &starr.PageReq{
+		PageSize: 100,
+		SortKey:  "date",
+		SortDir:  starr.SortDescend,
+	}
+	req.Set("albumId", strconv.FormatInt(albumID, 10))
+
+	history, err := client.GetHistoryPageContext(ctx, req)
+	if err != nil {
+		return fmt.Errorf("failed to get history: %w", err)
+	}
+
+	for _, record := range history.Records {
+		// Lidarr history has no fileId — match by eventType and importedPath
+		if record.EventType == "trackFileImported" && record.Data.ImportedPath != "" {
+			slog.InfoContext(ctx, "Found history record for album, marking as failed to blocklist release",
+				"history_id", record.ID,
+				"source_title", record.SourceTitle,
+				"event_type", record.EventType,
+				"imported_path", record.Data.ImportedPath)
+
+			if err := client.FailContext(ctx, record.ID); err != nil {
+				return fmt.Errorf("failed to mark history as failed: %w", err)
+			}
+			return nil
+		}
+	}
+
+	slog.WarnContext(ctx, "No history record found for album, cannot blocklist", "album_id", albumID)
 	return nil
 }
 

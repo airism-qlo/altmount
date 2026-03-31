@@ -82,6 +82,7 @@ export function ArrsConfigSection({
 			const allInstanceNames = [
 				...data.radarr_instances.map((i) => ({ name: i.name, type: "Radarr" })),
 				...data.sonarr_instances.map((i) => ({ name: i.name, type: "Sonarr" })),
+				...(data.lidarr_instances ?? []).map((i) => ({ name: i.name, type: "Lidarr" })),
 			];
 			const nameCount: Record<string, number> = {};
 			allInstanceNames.forEach(({ name }) => {
@@ -90,21 +91,24 @@ export function ArrsConfigSection({
 			Object.entries(nameCount).forEach(([name, count]) => {
 				if (count > 1) errors.push(`Instance name "${name}" is used multiple times`);
 			});
-			[...data.radarr_instances, ...data.sonarr_instances].forEach((instance, index) => {
-				const instanceType = data.radarr_instances.includes(instance) ? "Radarr" : "Sonarr";
+			[
+				...data.radarr_instances.map((i) => ({ instance: i, label: "Radarr" })),
+				...data.sonarr_instances.map((i) => ({ instance: i, label: "Sonarr" })),
+				...(data.lidarr_instances ?? []).map((i) => ({ instance: i, label: "Lidarr" })),
+			].forEach(({ instance, label }, index) => {
 				if (!instance.name.trim())
-					errors.push(`${instanceType} instance #${index + 1}: Name is required`);
+					errors.push(`${label} instance #${index + 1}: Name is required`);
 				if (!instance.url.trim()) {
-					errors.push(`${instanceType} instance "${instance.name}": URL is required`);
+					errors.push(`${label} instance "${instance.name}": URL is required`);
 				} else {
 					try {
 						new URL(instance.url);
 					} catch {
-						errors.push(`${instanceType} instance "${instance.name}": Invalid URL format`);
+						errors.push(`${label} instance "${instance.name}": Invalid URL format`);
 					}
 				}
 				if (!instance.api_key.trim())
-					errors.push(`${instanceType} instance "${instance.name}": API key is required`);
+					errors.push(`${label} instance "${instance.name}": API key is required`);
 			});
 		}
 		return errors;
@@ -117,14 +121,22 @@ export function ArrsConfigSection({
 		setValidationErrors(validateForm(newFormData));
 	};
 
+	const getInstancesKey = (
+		type: ArrsType,
+	): "radarr_instances" | "sonarr_instances" | "lidarr_instances" => {
+		if (type === "radarr") return "radarr_instances";
+		if (type === "sonarr") return "sonarr_instances";
+		return "lidarr_instances";
+	};
+
 	const handleInstanceChange = (
 		type: ArrsType,
 		index: number,
 		field: keyof ArrsInstanceConfig,
 		value: ArrsInstanceConfig[keyof ArrsInstanceConfig],
 	) => {
-		const instancesKey = type === "radarr" ? "radarr_instances" : "sonarr_instances";
-		const instances = [...formData[instancesKey]];
+		const instancesKey = getInstancesKey(type);
+		const instances = [...(formData[instancesKey] ?? [])];
 		instances[index] = { ...instances[index], [field]: value };
 		const newFormData = { ...formData, [instancesKey]: instances };
 		setFormData(newFormData);
@@ -133,8 +145,8 @@ export function ArrsConfigSection({
 	};
 
 	const removeInstance = (type: ArrsType, index: number) => {
-		const instancesKey = type === "radarr" ? "radarr_instances" : "sonarr_instances";
-		const instances = [...formData[instancesKey]];
+		const instancesKey = getInstancesKey(type);
+		const instances = [...(formData[instancesKey] ?? [])];
 		instances.splice(index, 1);
 		const newFormData = { ...formData, [instancesKey]: instances };
 		setFormData(newFormData);
@@ -144,13 +156,15 @@ export function ArrsConfigSection({
 
 	const addInstance = () => {
 		if (!newInstance.name.trim() || !newInstance.url.trim() || !newInstance.api_key.trim()) return;
-		const instancesKey = newInstance.type === "radarr" ? "radarr_instances" : "sonarr_instances";
+		const instancesKey = getInstancesKey(newInstance.type);
 		let category = newInstance.category.trim();
 		if (!category) {
-			category = newInstance.type === "radarr" ? "movies" : "tv";
+			if (newInstance.type === "radarr") category = "movies";
+			else if (newInstance.type === "sonarr") category = "tv";
+			else category = "music";
 		}
 		const instances = [
-			...formData[instancesKey],
+			...(formData[instancesKey] ?? []),
 			{
 				name: newInstance.name,
 				url: newInstance.url,
@@ -234,7 +248,7 @@ export function ArrsConfigSection({
 			<div>
 				<h3 className="font-bold text-base-content text-lg tracking-tight">ARR Applications</h3>
 				<p className="break-words text-base-content/50 text-sm">
-					Connect Radarr and Sonarr for automatic health monitoring and repair.
+					Connect Radarr, Sonarr, and Lidarr for automatic health monitoring and repair.
 				</p>
 			</div>
 
@@ -551,6 +565,36 @@ export function ArrsConfigSection({
 								)}
 							</div>
 						</div>
+
+						{/* Lidarr */}
+						<div className="space-y-6">
+							<div className="flex items-center justify-between gap-4">
+								<h4 className="flex items-center gap-2 font-bold text-sm">
+									<div className="h-2 w-2 rounded-full bg-accent" /> Lidarr Instances
+								</h4>
+								<button
+									type="button"
+									className="btn btn-sm btn-primary px-4"
+									onClick={() => {
+										setNewInstance({ ...DEFAULT_NEW_INSTANCE, type: "lidarr", category: "music" });
+										setShowAddInstance(true);
+									}}
+									disabled={isReadOnly}
+								>
+									<Plus className="h-3 w-3" /> Add
+								</button>
+							</div>
+							<div className="grid grid-cols-1 gap-4">
+								{(formData.lidarr_instances ?? []).map((instance, index) =>
+									renderInstance(instance, "lidarr", index),
+								)}
+								{(formData.lidarr_instances ?? []).length === 0 && (
+									<div className="rounded-2xl border-2 border-base-300 border-dashed p-8 text-center font-bold text-base-content/60 text-xs">
+										No Lidarr configured
+									</div>
+								)}
+							</div>
+						</div>
 					</div>
 				)}
 			</div>
@@ -560,7 +604,12 @@ export function ArrsConfigSection({
 				<div className="modal modal-open backdrop-blur-sm">
 					<div className="modal-box rounded-2xl border border-base-300 shadow-2xl">
 						<h3 className="mb-6 font-black text-xl uppercase tracking-tighter">
-							Add {newInstance.type === "radarr" ? "Radarr" : "Sonarr"}
+							Add{" "}
+							{newInstance.type === "radarr"
+								? "Radarr"
+								: newInstance.type === "sonarr"
+									? "Sonarr"
+									: "Lidarr"}
 						</h3>
 						<div className="space-y-5">
 							<fieldset className="fieldset">

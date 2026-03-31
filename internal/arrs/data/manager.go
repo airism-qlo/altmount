@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"golang.org/x/sync/singleflight"
+	"golift.io/starr/lidarr"
 	"golift.io/starr/radarr"
 	"golift.io/starr/sonarr"
 )
@@ -19,6 +20,7 @@ type Manager struct {
 	movieCache        map[string][]*radarr.Movie       // key: instance name
 	seriesCache       map[string][]*sonarr.Series      // key: instance name
 	episodeFilesCache map[string][]*sonarr.EpisodeFile // key: instance name + series id
+	albumCache        map[string][]*lidarr.Album       // key: instance name
 	cacheExpiry       map[string]time.Time             // key: cache key
 	requestGroup      singleflight.Group
 }
@@ -28,6 +30,7 @@ func NewManager() *Manager {
 		movieCache:        make(map[string][]*radarr.Movie),
 		seriesCache:       make(map[string][]*sonarr.Series),
 		episodeFilesCache: make(map[string][]*sonarr.EpisodeFile),
+		albumCache:        make(map[string][]*lidarr.Album),
 		cacheExpiry:       make(map[string]time.Time),
 	}
 }
@@ -169,4 +172,50 @@ func (m *Manager) GetEpisodeFiles(ctx context.Context, client *sonarr.Sonarr, in
 	}
 
 	return v.([]*sonarr.EpisodeFile), nil
+}
+
+// GetAlbums retrieves all albums from Lidarr, using a cache if available and valid
+func (m *Manager) GetAlbums(ctx context.Context, client *lidarr.Lidarr, instanceName string) ([]*lidarr.Album, error) {
+	// 1. Check cache (read lock)
+	m.cacheMu.RLock()
+	albums, ok := m.albumCache[instanceName]
+	expiry, valid := m.cacheExpiry[instanceName]
+	m.cacheMu.RUnlock()
+
+	if ok && valid && time.Now().Before(expiry) {
+		slog.DebugContext(ctx, "Using cached album list", "instance", instanceName, "count", len(albums))
+		return albums, nil
+	}
+
+	// 2. Use singleflight to deduplicate requests
+	key := "lidarr_albums_" + instanceName
+	v, err, _ := m.requestGroup.Do(key, func() (any, error) {
+		// Double check cache
+		m.cacheMu.RLock()
+		albums, ok := m.albumCache[instanceName]
+		expiry, valid := m.cacheExpiry[instanceName]
+		m.cacheMu.RUnlock()
+		if ok && valid && time.Now().Before(expiry) {
+			return albums, nil
+		}
+
+		slog.DebugContext(ctx, "Fetching fresh album list", "instance", instanceName)
+		freshAlbums, err := client.GetAlbumContext(ctx, "")
+		if err != nil {
+			return nil, err
+		}
+
+		m.cacheMu.Lock()
+		m.albumCache[instanceName] = freshAlbums
+		m.cacheExpiry[instanceName] = time.Now().Add(cacheTTL)
+		m.cacheMu.Unlock()
+
+		return freshAlbums, nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return v.([]*lidarr.Album), nil
 }

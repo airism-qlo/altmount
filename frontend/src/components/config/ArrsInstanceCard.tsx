@@ -79,7 +79,7 @@ export function ArrsInstanceCard({
 			className="group relative overflow-hidden rounded-2xl border border-base-300 bg-base-100/50 transition-all hover:shadow-md"
 		>
 			<div
-				className={`absolute top-0 bottom-0 left-0 w-1.5 ${type === "radarr" ? "bg-primary" : "bg-secondary"}`}
+				className={`absolute top-0 bottom-0 left-0 w-1.5 ${type === "radarr" ? "bg-primary" : type === "sonarr" ? "bg-secondary" : "bg-accent"}`}
 			/>
 
 			<div className="space-y-6 p-5 pl-7">

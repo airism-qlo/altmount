@@ -71,6 +71,10 @@ git-hooks:
 docker-build:
 	docker build -f docker/Dockerfile -t altmount:$(DOCKER_IMAGE_TAG) .
 
+.PHONY: docker-build-arm
+docker-build-arm:
+	docker build --platform linux/arm64 -f docker/Dockerfile -t altmount:$(DOCKER_IMAGE_TAG)-arm64 .
+
 .PHONY: docker-build-ci
 docker-build-ci: build-frontend
 	docker build -f docker/Dockerfile.ci -t altmount:ci-latest .

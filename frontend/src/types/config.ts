@@ -656,7 +656,7 @@ export interface SABnzbdFormData {
 }
 
 // Arrs configuration types
-export type ArrsType = "radarr" | "sonarr";
+export type ArrsType = "radarr" | "sonarr" | "lidarr";
 
 // Sync status types
 export type SyncStatus = "idle" | "running" | "cancelling" | "completed" | "failed";
@@ -696,6 +696,7 @@ export interface ArrsConfig {
 	webhook_base_url?: string;
 	radarr_instances: ArrsInstanceConfig[];
 	sonarr_instances: ArrsInstanceConfig[];
+	lidarr_instances: ArrsInstanceConfig[];
 	queue_cleanup_enabled?: boolean;
 	queue_cleanup_interval_seconds?: number;
 	queue_cleanup_grace_period_minutes?: number;
@@ -730,6 +731,7 @@ export interface ArrsFormData {
 	webhook_base_url?: string;
 	radarr_instances: ArrsInstanceConfig[];
 	sonarr_instances: ArrsInstanceConfig[];
+	lidarr_instances: ArrsInstanceConfig[];
 	queue_cleanup_enabled?: boolean;
 	queue_cleanup_interval_seconds?: number;
 	queue_cleanup_grace_period_minutes?: number;
@@ -881,9 +883,9 @@ export const CONFIG_SECTIONS: Record<ConfigSection | "system", ConfigSectionInfo
 		canEdit: true,
 	},
 	arrs: {
-		title: "Radarr/Sonarr Management",
+		title: "Radarr/Sonarr/Lidarr Management",
 		description:
-			"Configure Radarr and Sonarr instances for movie and TV show file synchronization. This will allow to repair broken files by notifying the appropriate service.",
+			"Configure Radarr, Sonarr, and Lidarr instances for movie, TV show, and music file synchronization. This will allow to repair broken files by notifying the appropriate service.",
 		icon: "Cog",
 		canEdit: true,
 	},
