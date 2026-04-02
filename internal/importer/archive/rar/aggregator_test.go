@@ -94,6 +94,28 @@ func TestProcessArchivePreservesInternalFolderStructure(t *testing.T) {
 			},
 		},
 		{
+			name:       "nested RAR folder same as virtual dir base: deduplicated",
+			virtualDir: "movies/MyMovie",
+			nzbPath:    "movies/MyMovie.nzb",
+			contents: []Content{
+				{InternalPath: "MyMovie/video.mkv", Filename: "video.mkv", Size: 1000,
+					Segments: []*metapb.SegmentData{{Id: "seg1", StartOffset: 0, EndOffset: 999}}},
+			},
+			wantMetaPaths:    []string{"movies/MyMovie/video.mkv"},
+			notWantMetaPaths: []string{"movies/MyMovie/MyMovie/video.mkv"},
+		},
+		{
+			name:       "nested RAR folder same as virtual dir base with subfolder: prefix stripped",
+			virtualDir: "movies/MyMovie",
+			nzbPath:    "movies/MyMovie.nzb",
+			contents: []Content{
+				{InternalPath: "MyMovie/Extras/bonus.mkv", Filename: "bonus.mkv", Size: 500,
+					Segments: []*metapb.SegmentData{{Id: "seg1", StartOffset: 0, EndOffset: 499}}},
+			},
+			wantMetaPaths:    []string{"movies/MyMovie/Extras/bonus.mkv"},
+			notWantMetaPaths: []string{"movies/MyMovie/MyMovie/Extras/bonus.mkv"},
+		},
+		{
 			name:            "single file with rename: placed flat ignoring internal subdir",
 			virtualDir:      "movies/MyMovie",
 			nzbPath:         "movies/MyMovie.nzb",
@@ -139,29 +161,28 @@ func TestProcessArchivePreservesInternalFolderStructure(t *testing.T) {
 				}
 			}
 
-			err := ProcessArchive(
-				ctx,
-				tt.virtualDir,
-				[]parser.ParsedFile{{Filename: "archive.rar"}},
-				"",        // password
-				0,         // releaseDate
-				tt.nzbPath,
-				proc,
-				svc,
-				nil, // poolManager — not needed when all files are pre-extracted
-				nil, // archiveProgressTracker
-				nil, // validationProgressTracker
-				1,   // maxValidationGoroutines
-				100, // segmentSamplePercentage
-				nil, // allowedFileExtensions — nil = allow all
-				30*time.Second,
-				extracted,
-				1,     // maxPrefetch
-				30*time.Second,
-				false, // expandBlurayIso
-				false, // filterSamples
-				tt.renameToNzbName,
-			)
+			err := ProcessArchive(ctx, ProcessArchiveOptions{
+				VirtualDir:              tt.virtualDir,
+				ArchiveFiles:            []parser.ParsedFile{{Filename: "archive.rar"}},
+				Password:                "",
+				ReleaseDate:             0,
+				NzbPath:                 tt.nzbPath,
+				Processor:               proc,
+				MetadataService:         svc,
+				PoolManager:             nil,
+				ArchiveProgressTracker:  nil,
+				ValidationProgressTracker: nil,
+				MaxValidationGoroutines: 1,
+				SegmentSamplePercentage: 100,
+				AllowedFileExtensions:   nil,
+				Timeout:                 30 * time.Second,
+				ExtractedFiles:          extracted,
+				MaxPrefetch:             1,
+				ReadTimeout:             30 * time.Second,
+				ExpandBlurayIso:         false,
+				FilterSamples:           false,
+				RenameToNzbName:         tt.renameToNzbName,
+			})
 			require.NoError(t, err)
 
 			for _, vp := range tt.wantMetaPaths {
